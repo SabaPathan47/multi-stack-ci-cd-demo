@@ -1,3 +1,4 @@
+using System;
 using Moq;
 using ProductCatalog.Api.Data;
 using ProductCatalog.Api.Models;
