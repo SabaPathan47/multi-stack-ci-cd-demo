@@ -6,7 +6,7 @@ on:
   push:
     branches:
       - main
-      - 'feature/**'
+      - 'feature/sample-change'
     paths:
       - 'apps/dotnet-product-catalog/**'
       - '.github/workflows/reusable-ci-cd.yml'
@@ -14,7 +14,7 @@ on:
   pull_request:
     branches:
       - main
-      - 'feature/**'
+      - 'feature/sample-change'
     paths:
       - 'apps/dotnet-product-catalog/**'
 
