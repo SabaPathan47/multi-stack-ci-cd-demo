@@ -1,0 +1,33 @@
+name: Java Task Manager CI/CD
+
+# Save at: .github/workflows/java-app-ci-cd.yml
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'apps/java-task-manager/**'
+      - '.github/workflows/reusable-ci-cd.yml'
+      - '.github/workflows/java-app-ci-cd.yml'
+  pull_request:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'apps/java-task-manager/**'
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/reusable-ci-cd.yml
+    with:
+      app_type: java
+      app_name: java-task-manager
+      working_directory: apps/java-task-manager
+      java_version: '17'
+      image_name: ${{ github.repository }}/java-task-manager
+      dockerfile_path: Dockerfile
+      enable_ai_review: true
+    secrets:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}

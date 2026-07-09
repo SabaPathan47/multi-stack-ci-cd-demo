@@ -1,0 +1,288 @@
+name: Reusable Build-Test-Scan-Publish-Deploy
+
+# Save at: .github/workflows/reusable-ci-cd.yml
+# Shared by both the Spring Boot and .NET applications via `uses:`.
+
+on:
+  workflow_call:
+    inputs:
+      app_type:
+        description: "'java' or 'dotnet'"
+        required: true
+        type: string
+      app_name:
+        description: "Short name used for image tags, artifact names, PR comments"
+        required: true
+        type: string
+      working_directory:
+        required: true
+        type: string
+      java_version:
+        required: false
+        type: string
+        default: "17"
+      dotnet_version:
+        required: false
+        type: string
+        default: "8.0.x"
+      image_name:
+        description: "ghcr.io image path, e.g. owner/repo/app-name"
+        required: true
+        type: string
+      dockerfile_path:
+        required: false
+        type: string
+        default: "Dockerfile"
+      enable_ai_review:
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      NVIDIA_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+  security-events: write
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1. BUILD + UNIT TEST
+  # ---------------------------------------------------------------
+  build-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    outputs:
+      short_sha: ${{ steps.vars.outputs.short_sha }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set short SHA
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # ---- Java ----
+      - name: Set up Java
+        if: inputs.app_type == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ inputs.java_version }}
+          cache: 'maven'
+
+      - name: Build (Java)
+        if: inputs.app_type == 'java'
+        run: mvn -B clean compile
+
+      - name: Unit test (Java)
+        if: inputs.app_type == 'java'
+        run: mvn -B test
+
+      - name: Publish test report (Java)
+        if: inputs.app_type == 'java' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app_name }}-test-report
+          path: ${{ inputs.working_directory }}/target/surefire-reports/**
+          if-no-files-found: ignore
+
+      # ---- .NET ----
+      - name: Set up .NET
+        if: inputs.app_type == 'dotnet'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Restore (.NET)
+        if: inputs.app_type == 'dotnet'
+        run: dotnet restore
+
+      - name: Build (.NET)
+        if: inputs.app_type == 'dotnet'
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Unit test (.NET)
+        if: inputs.app_type == 'dotnet'
+        run: dotnet test --no-build --configuration Release --logger "trx;LogFileName=test-results.trx" --results-directory ./test-results
+
+      - name: Publish test report (.NET)
+        if: inputs.app_type == 'dotnet' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.app_name }}-test-report
+          path: ${{ inputs.working_directory }}/test-results/**
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------
+  # 2. AI PR REVIEW AGENT (NVIDIA-backed) - PR events only
+  # ---------------------------------------------------------------
+  ai-review:
+    needs: build-test
+    if: github.event_name == 'pull_request' && inputs.enable_ai_review
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate PR diff
+        run: |
+          git diff origin/${{ github.base_ref }}...${{ github.event.pull_request.head.sha }} \
+            -- ${{ inputs.working_directory }} > diff.txt || true
+
+      - name: Run AI review agent
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 .github/scripts/nvidia_agent_review.py \
+            --mode review \
+            --input diff.txt \
+            --app-label ${{ inputs.app_name }}
+
+  # ---------------------------------------------------------------
+  # 3. SECURITY SCANNING (dependencies + later the built image)
+  # ---------------------------------------------------------------
+  security-scan:
+    needs: build-test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Trivy filesystem scan (dependencies)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.working_directory }}
+          format: sarif
+          output: trivy-fs-report.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          exit-code: '1'   # fail the job on CRITICAL/HIGH findings
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ inputs.working_directory }}/trivy-fs-report.sarif
+
+      - name: Trivy JSON report for AI summary
+        if: always()
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.working_directory }}
+          format: json
+          output: trivy-fs-report.json
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          exit-code: '0'
+
+      - name: Summarize scan with AI agent
+        if: always() && github.event_name == 'pull_request'
+        env:
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 $GITHUB_WORKSPACE/.github/scripts/nvidia_agent_review.py \
+            --mode security \
+            --input trivy-fs-report.json \
+            --app-label ${{ inputs.app_name }}
+
+  # ---------------------------------------------------------------
+  # 4. DOCKER IMAGE BUILD + PUBLISH TO GHCR
+  # ---------------------------------------------------------------
+  build-publish-image:
+    needs: [build-test, security-scan]
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set image tag
+        id: meta
+        run: echo "image_tag=${{ needs.build-test.outputs.short_sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ inputs.working_directory }}
+          file: ${{ inputs.working_directory }}/${{ inputs.dockerfile_path }}
+          push: true
+          tags: |
+            ghcr.io/${{ inputs.image_name }}:${{ steps.meta.outputs.image_tag }}
+            ghcr.io/${{ inputs.image_name }}:latest
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ghcr.io/${{ inputs.image_name }}:${{ steps.meta.outputs.image_tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+
+  # ---------------------------------------------------------------
+  # 5. DEPLOY - DEV (feature branches)
+  # ---------------------------------------------------------------
+  deploy-dev:
+    needs: build-publish-image
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feature/')
+    runs-on: ubuntu-latest
+    environment:
+      name: dev
+    steps:
+      - name: Deploy to dev
+        run: |
+          echo "Deploying ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }} to DEV"
+          # e.g.: kubectl --context dev set image deployment/${{ inputs.app_name }} app=ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }}
+
+  # ---------------------------------------------------------------
+  # 6. DEPLOY - STAGING (main branch)
+  # ---------------------------------------------------------------
+  deploy-staging:
+    needs: build-publish-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    steps:
+      - name: Deploy to staging
+        run: |
+          echo "Deploying ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }} to STAGING"
+          # e.g.: kubectl --context staging set image deployment/${{ inputs.app_name }} app=ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }}
+
+  # ---------------------------------------------------------------
+  # 7. DEPLOY - PRODUCTION (main branch, gated by environment approval)
+  # ---------------------------------------------------------------
+  deploy-production:
+    needs: [deploy-staging, build-publish-image]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Deploy to production
+        run: |
+          echo "Deploying ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }} to PRODUCTION"
+          # e.g.: kubectl --context production set image deployment/${{ inputs.app_name }} app=ghcr.io/${{ inputs.image_name }}:${{ needs.build-publish-image.outputs.image_tag }}

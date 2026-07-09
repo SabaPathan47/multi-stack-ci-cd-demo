@@ -1,0 +1,33 @@
+name: .NET Product Catalog CI/CD
+
+# Save at: .github/workflows/dotnet-app-ci-cd.yml
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'apps/dotnet-product-catalog/**'
+      - '.github/workflows/reusable-ci-cd.yml'
+      - '.github/workflows/dotnet-app-ci-cd.yml'
+  pull_request:
+    branches:
+      - main
+      - 'feature/**'
+    paths:
+      - 'apps/dotnet-product-catalog/**'
+
+jobs:
+  pipeline:
+    uses: ./.github/workflows/reusable-ci-cd.yml
+    with:
+      app_type: dotnet
+      app_name: dotnet-product-catalog
+      working_directory: apps/dotnet-product-catalog
+      dotnet_version: '8.0.x'
+      image_name: ${{ github.repository }}/dotnet-product-catalog
+      dockerfile_path: Dockerfile
+      enable_ai_review: true
+    secrets:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
