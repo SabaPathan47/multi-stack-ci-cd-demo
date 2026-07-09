@@ -168,7 +168,7 @@ jobs:
           scan-type: fs
           scan-ref: ${{ inputs.working_directory }}
           format: sarif
-          output: trivy-fs-report.sarif
+          output: ${{ inputs.working_directory }}/trivy-fs-report.sarif
           severity: CRITICAL,HIGH,MEDIUM
           exit-code: '0'   # fail the job on CRITICAL/HIGH findings
 
@@ -185,7 +185,7 @@ jobs:
           scan-type: fs
           scan-ref: ${{ inputs.working_directory }}
           format: json
-          output: trivy-fs-report.json
+          output: ${{ inputs.working_directory }}/trivy-fs-report.json
           severity: CRITICAL,HIGH,MEDIUM,LOW
           exit-code: '0'
 
@@ -198,7 +198,7 @@ jobs:
         run: |
           python3 $GITHUB_WORKSPACE/.github/scripts/nvidia_agent_review.py \
             --mode security \
-            --input trivy-fs-report.json \
+            --input ${{ inputs.working_directory }}/trivy-fs-report.json \
             --app-label ${{ inputs.app_name }}
 
   # ---------------------------------------------------------------
