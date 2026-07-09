@@ -163,7 +163,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Trivy filesystem scan (dependencies)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ inputs.working_directory }}
@@ -180,7 +180,7 @@ jobs:
 
       - name: Trivy JSON report for AI summary
         if: always()
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: ${{ inputs.working_directory }}
@@ -235,7 +235,7 @@ jobs:
             ghcr.io/${{ inputs.image_name }}:latest
 
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ghcr.io/${{ inputs.image_name }}:${{ steps.meta.outputs.image_tag }}
           format: table
